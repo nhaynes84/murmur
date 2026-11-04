@@ -9,7 +9,12 @@ to a phone (GarageBand, BandLab, anything that takes MIDI) or over USB to a comp
 Nobody plays it but the plant. There are no keys and no touch pad: you choose a mood and an
 instrument, and the plant does the rest.
 
-![MURMUR's screen](docs/screens/main.png)
+<p align="center"><img src="docs/photos/murmur-apple.jpg" width="420" alt="MURMUR listening to an apple"></p>
+
+| | | |
+|---|---|---|
+| ![front](docs/photos/murmur-front.jpg) | ![the square-wave band](docs/photos/murmur-band.jpg) | ![the back, with its money plant](docs/photos/murmur-back.jpg) |
+| The face: touch screen, inset name | The band all the way round is the 555's square wave | The back: a money plant, inlaid |
 
 ## How it works
 
