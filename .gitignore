@@ -1,0 +1,6 @@
+ref/
+firmware/build/
+firmware/murmur/build/
+cad/__pycache__/
+*.pyc
+firmware/murmur/secrets.h
