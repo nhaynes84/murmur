@@ -26,7 +26,7 @@ static Preferences prefs;
 
 // ------------------------------------------------------------------ settings (persisted)
 struct Settings {
-  uint8_t scale = 0, root = 0, sens = 5, voices = 3;
+  uint8_t scale = 0, root = 0, sens = 5, voices = 3, speed = 1;   // speed: wave scroll 0 slow 1 normal 2 fast
   bool demo = false, flip = false, wifi = true, bass = false;
 } S;
 
@@ -40,6 +40,7 @@ static void load() {
   S.flip = prefs.getBool("flip", false);
   S.wifi = prefs.getBool("wifi", true);
   S.bass = prefs.getBool("bass", false);
+  S.speed = prefs.getUChar("speed", 1) % 3;
   prefs.end();
 }
 static void save() {
@@ -48,6 +49,7 @@ static void save() {
   prefs.putUChar("sens", S.sens); prefs.putUChar("voices", S.voices);
   prefs.putBool("demo", S.demo); prefs.putBool("flip", S.flip); prefs.putBool("wifi", S.wifi);
   prefs.putBool("bass", S.bass);
+  prefs.putUChar("speed", S.speed);
   prefs.end();
 }
 
@@ -231,6 +233,9 @@ static void swellTick() {
   if (abs(x - lastExpr) >= 2 && now - exprMs > 100) { midi(0xB0, 11, x); lastExpr = x; exprMs = now; }
 }
 
+static float dbgMean = 0, dbgRatio = 0, dbgChange = 0;   // last window, for /status
+static uint32_t notesTotal = 0;
+
 static int activeScale() { return moodTemp >= 0 && millis() < moodUntil ? moodTemp : S.scale; }
 static int activeRoot() { return S.root + music::fifths(keyFifths); }
 
@@ -247,7 +252,14 @@ static bool traceMark[TRACE_W];
 static int traceHead = 0;
 
 // how unusual a change must be (x its typical change) to become a note: 1 = calm ... 9 = chatty
-static float sensFactor() { return 3.0f - (S.sens - 1) * 0.275f; }
+//   ⚠️ must stay > 1 at chatty: at 0.8 (the old 9) it fired on the plant's ORDINARY movement —
+//   half of all windows played ("balls out hyper sample mode", 2026-11-04, apple at 180 Hz).
+static float sensFactor() { return 3.5f - (S.sens - 1) * 0.275f; }   // 1 -> 3.5x ... 9 -> 1.3x
+static uint32_t noteGapMs() { return 120 + (9 - S.sens) * 25; }       // chatty 120 ms ... calm 320 ms
+// ★ NOISE FLOOR: the ISR's timing jitter (BLE + Wi-Fi interrupts) moves a 10-pulse mean by a few µs
+//   no matter what the plant does. Measured 2026-11-04 at 180 Hz: 'typical' sat at 2-4.7 µs. At low
+//   rates the relative floor (0.05%) is far above it; at high rates jitter IS the signal. Floor it.
+static const float JITTER_US = 6.0f;
 
 static void slowTick(float m) {
   slow = slow == 0 ? m : slow + (m - slow) * 0.02f;
@@ -276,10 +288,26 @@ static void slowTick(float m) {
   }
 }
 
-static void onPeriod(float p) {
-  trace[traceHead] = p;
-  traceMark[traceHead] = false;
+// ★ the wave scrolls by TIME, not by pulse: one point per 40 ms (240 px = ~10 s on screen) at any
+//   rate. Per-pulse it raced 7x faster when an apple went from 25 Hz to 180 Hz (2026-11-04).
+static float traceAcc = 0;
+static int traceN = 0;
+static bool traceNoteDue = false;
+static uint32_t traceMs = 0, speedShownMs = 0;
+static const uint16_t TRACE_STEP_MS[3] = {100, 40, 15};     // ~24 s · ~10 s · ~4 s across the screen
+static const char* SPEED_NAME[3] = {"slow wave", "normal wave", "fast wave"};
+static void traceTick() {
+  if (millis() - traceMs < TRACE_STEP_MS[S.speed]) return;
+  traceMs = millis();
+  if (!traceN) return;                     // no pulses: hold still, don't invent points
+  trace[traceHead] = traceAcc / traceN;
+  traceMark[traceHead] = traceNoteDue;
   traceHead = (traceHead + 1) % TRACE_W;
+  traceAcc = 0; traceN = 0; traceNoteDue = false;
+}
+
+static void onPeriod(float p) {
+  traceAcc += p; traceN++;
   win[nwin++] = p;
   if (nwin < WIN) return;
   nwin = 0;
@@ -296,17 +324,18 @@ static void onPeriod(float p) {
   prevMean = m;
   // ★ ADAPTIVE: steady drift raises "typical" by itself, so drift alone stops making notes;
   //   only a change that is unusual FOR THIS PLANT, RIGHT NOW, plays.
-  float ratio = fabsf(change) / max(typical, m * 0.0005f);
+  float ratio = fabsf(change) / max(max(typical, m * 0.0005f), JITTER_US);
   typical += (fabsf(change) - typical) * 0.05f;
+  dbgMean = m; dbgRatio = ratio; dbgChange = change;
   slowTick(m);
 
   float pos = rankIn(hist, min(nhist, HIST), m);   // rank, not min/max
   float sf = sensFactor();
 
-  if (ratio > sf && millis() - lastNoteMs > 90) {
+  if (ratio > sf && millis() - lastNoteMs > noteGapMs()) {
     float e = ratio / sf;                            // 1 = just enough ... big = a jolt
     swellHit(e);
-    if (e > 5 && millis() - moodMs > 30000) {        // a big event tips the mood for a while
+    if (e > 5 && millis() - moodMs > 60000) {        // a big event tips the mood for a while
       moodTemp = music::SISTER[S.scale]; moodUntil = millis() + 25000; moodMs = millis();
       Serial.printf("mood -> %s\n", music::SCALES[moodTemp].mood);
     }
@@ -342,8 +371,8 @@ static void onPeriod(float p) {
     } else {
       play(note, vel, len);
     }
-    lastNote = note; lastVel = vel; lastNoteMs = millis();
-    traceMark[(traceHead + TRACE_W - 1) % TRACE_W] = true;
+    lastNote = note; lastVel = vel; lastNoteMs = millis(); notesTotal++;
+    traceNoteDue = true;                    // the seed lands on the next wave point
     bloomPending = true;
   }
   int cc = (int)constrain(pos * 127, 0, 127);
@@ -523,7 +552,11 @@ static void drawMain() {
     String k = String("in ") + music::KEYS[(activeRoot() % 12 + 12) % 12];
     if (activeScale() != S.scale) k += String(" - ") + music::SCALES[activeScale()].mood;
     frame->drawString(k, ST_X + 10, ST_Y + 8);
-    if (millis() - lastNoteMs < 2500 && lastNoteMs) {
+    if (speedShownMs && millis() - speedShownMs < 1500) {        // just tapped: say the new speed
+      frame->setTextColor(C_CREAM);
+      frame->setTextDatum(top_right);
+      frame->drawString(SPEED_NAME[S.speed], ST_X + ST_W - 10, ST_Y + 8);
+    } else if (millis() - lastNoteMs < 2500 && lastNoteMs) {
       frame->setTextColor(C_DIM);
       frame->setTextDatum(top_right);
       frame->drawString(music::name(lastNote), ST_X + ST_W - 10, ST_Y + 8);
@@ -636,6 +669,7 @@ static void touch() {
       else if (y >= 270) settingsOpen = false;
     } else {
       if (y < 50 && x > 170) settingsOpen = true;                       // the gear
+      else if (y >= ST_Y && y < ST_Y + ST_H) { S.speed = (S.speed + 1) % 3; speedShownMs = millis(); }   // tap the wave: its speed
       else if (y >= 220 && y < 256) {                                    // mood
         if (x < 120) S.scale = (S.scale + music::N_SCALES - 1) % music::N_SCALES;
         else S.scale = (S.scale + 1) % music::N_SCALES;
@@ -690,7 +724,10 @@ void setup() {
            ",\"mood\":\"" + music::SCALES[S.scale].mood + "\",\"sens\":" + S.sens + ",\"voices\":" + S.voices +
            ",\"key\":\"" + music::KEYS[(activeRoot() % 12 + 12) % 12] + "\",\"fifths\":" + keyFifths +
            ",\"active_mood\":\"" + music::SCALES[activeScale()].mood + "\",\"register\":" + regShift +
-           ",\"bass\":" + (S.bass ? "true" : "false");
+           ",\"bass\":" + (S.bass ? "true" : "false") +
+           ",\"mean_us\":" + String(dbgMean, 1) + ",\"typical_us\":" + String(typical, 2) +
+           ",\"change_us\":" + String(dbgChange, 2) + ",\"ratio\":" + String(dbgRatio, 2) +
+           ",\"notes\":" + notesTotal;
   };
   Serial.println("stage: ble"); Serial.flush();
   blemidi::begin("MURMUR");
@@ -732,6 +769,7 @@ void loop() {
     tail++;
   }
   if (!plantPresent()) allOff();
+  traceTick();
   voiceTick();
   droneTick();
   swellTick();
