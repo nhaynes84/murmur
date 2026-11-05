@@ -239,6 +239,16 @@ static uint32_t notesTotal = 0;
 static int activeScale() { return moodTemp >= 0 && millis() < moodUntil ? moodTemp : S.scale; }
 static int activeRoot() { return S.root + music::fifths(keyFifths); }
 
+// ★ RANGE: fold by octaves into a comfortable window (his call 2026-11-04: "it was doing F1, now G2").
+//   Folding keeps the note's name, so the melody keeps its shape; clamping would pile notes on one edge.
+static const int MEL_LO = 48, MEL_HI = 84;   // melody + chord tones: C3..C6
+static const int BASS_LO = 40, BASS_HI = 64; // chord bass: E2..E4 (the drone, ch 2, stays C2..B2)
+static uint8_t fold(int n, int lo, int hi) {
+  while (n < lo) n += 12;
+  while (n > hi) n -= 12;
+  return (uint8_t)n;
+}
+
 static float rankIn(const float* a, int n, float v) {   // 0..1: share of a[] below v (ties half)
   if (n < 2) return 0.5f;
   float below = 0;
@@ -351,23 +361,25 @@ static void onPeriod(float p) {
     if (curDeg > 2 * n) curDeg = 2 * n - 1;                    // bounce off the ends
     if (curDeg < -n) curDeg = -n + 1;
     int root = activeRoot(), oct = 3 + regShift;
-    uint8_t note = music::note(sc, curDeg, root, oct);
+    auto mel = [&](int d) { return fold(music::note(sc, d, root, oct), MEL_LO, MEL_HI); };
+    auto bass = [&](int d) { return fold(music::note(sc, d, root, oct), BASS_LO, BASS_HI); };
+    uint8_t note = mel(curDeg);
     if (note == lastNote) {                                    // never the same note twice running
       curDeg += (curDeg + dir > 2 * n || curDeg + dir < -n) ? -dir : dir;
-      note = music::note(sc, curDeg, root, oct);
+      note = mel(curDeg);
     }
     uint8_t vel = (uint8_t)constrain(55 + 30 * (ratio - sf), 45, 120);
     uint32_t len = constrain(winMs * 4, 180u, 1600u);
     int size = e < 1.5f ? 1 : e < 2.2f ? 2 : e < 3.5f ? 3 : 4;  // how many notes this change earns
     size = min(size, (int)S.voices);
     uint8_t sub = (uint8_t)max(40, vel - 18);
-    if (size >= 2 && size < 4) play(music::note(sc, curDeg - 2, root, oct), sub, len);   // a third below
-    if (size == 3) play(music::note(sc, curDeg - 4 - n, root, oct), sub, len * 3 / 2);   // bass, octave down
+    if (size >= 2 && size < 4) play(mel(curDeg - 2), sub, len);                          // a third below
+    if (size == 3) play(bass(curDeg - 4 - n), sub, len * 3 / 2);             // bass, octave down
     if (size >= 4) {                                           // arpeggio: bass, 1, 3, 5, 7 rising
-      play(music::note(sc, curDeg - n, root, oct), sub, len * 2);
+      play(bass(curDeg - n), sub, len * 2);
       int sv = min((int)S.voices - 1, 4);
       for (int k = 0; k < sv; k++)
-        later(music::note(sc, curDeg + 2 * k, root, oct), k ? sub : vel, len, 110 * (k + 1));
+        later(mel(curDeg + 2 * k), k ? sub : vel, len, 110 * (k + 1));
     } else {
       play(note, vel, len);
     }
