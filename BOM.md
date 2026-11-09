@@ -11,7 +11,7 @@ Prices checked 2026-10-29 to 2026-11-04 and they move. Most electronics come in 
 | 2 | **TLC555CP** CMOS 555 timer, DIP-8 | 1 | ⚠️ Must be the **CMOS** TLC555 (2–15 V). An NE555 needs ≥4.5 V, and the board has no 5 V on battery | any electronics supplier | ~$1 |
 | 3 | Resistor 10 kΩ (R1) | 1 | 3V3 → pin 7 | resistor kit | — |
 | 4 | Resistor 1 kΩ (R2) | 1 | In series with the electrode, as static protection | resistor kit | — |
-| 5 | Capacitor, timing (C1) | 1 | **See note A** | cap kit | — |
+| 5 | Capacitor, timing (C1): **10 nF ceramic** (marked 103) | 1 | See note A | ceramic cap kit | — |
 | 6 | Capacitor 0.1 µF (C2) + 10 µF (C3) | 1 + 1 | Supply decoupling at the 555 | cap kit | — |
 | 7 | 3.5 mm panel jack **PJ-392** | 1 | Plant lead input. Not the PJ-307, which is PCB mount | [Amazon B0C68Q22KJ](https://www.amazon.com/dp/B0C68Q22KJ) | $6.49 / 10 |
 | 8 | HY2.0 4-pin cable | 1 | Into the CrowPanel's **UART1-OUT** socket (3V3 · GND · IO17) | comes with the CrowPanel | — |
@@ -42,11 +42,11 @@ Prices checked 2026-10-29 to 2026-11-04 and they move. Most electronics come in 
 
 ## Notes
 
-**A. The timing capacitor (C1).** The build was tested with a **0.1 µF electrolytic**. That gives
-about 20–75 Hz on a hand or an apple and plays well. On high-resistance plants it **stalls after a
-couple of pulses**: the electrolytic's leakage swallows the tiny charge current. The fix is a
-**10 nF ceramic or film** cap (1–4.7 nF if that runs too slow). That isn't tested yet; the
-firmware's windowing is rate-agnostic, and frequency ≈ 1.44 / ((10k + 2·R_plant) · C).
+**A. The timing capacitor (C1).** Use a **10 nF ceramic** (marked 103). Tested on an apple and on
+leafy houseplants: about 2–4 kHz on an apple, and steady on leaves. The first build used a 0.1 µF
+electrolytic. That worked on a hand or an apple but **stalled on leafy plants after a couple of
+pulses**, because the electrolytic's leakage swallowed the tiny charge current. The firmware's
+listening doesn't depend on the pulse rate, so other values work too (frequency ≈ 1.44 / ((10k + 2·R_plant) · C)).
 
 **B. Battery polarity.** Cheap PH2.0 leads ship wired either way round. Check that red goes to the
 CrowPanel socket's **+** before you plug in, because reversed polarity can kill the charger chip.

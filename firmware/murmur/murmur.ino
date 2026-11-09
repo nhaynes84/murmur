@@ -12,6 +12,7 @@
 //
 // Build: firmware/build.sh  (arduino-cli, esp32 core, LovyanGFX).
 #include <Preferences.h>
+#include <algorithm>
 #include "USB.h"
 #include "USBMIDI.h"
 #include "board.h"
@@ -120,7 +121,10 @@ static void demoTick() {
 
 // ------------------------------------------------------------------ MIDI out (BLE + USB)
 static bool usbUp = false;
+static uint32_t midiCount[4] = {0, 0, 0, 0};   // notes-on, notes-off, CC74, CC11 (since boot)
 static void midi(uint8_t status, uint8_t d1, uint8_t d2) {
+  uint8_t c = status & 0xF0;
+  midiCount[c == 0x90 ? 0 : c == 0x80 ? 1 : d1 == 74 ? 2 : 3]++;
   blemidi::send(status, d1, d2);
   if (usbUp) {
     uint8_t cmd = status & 0xF0, ch = (status & 0x0F) + 1;
@@ -188,9 +192,12 @@ static void voiceTick() {
 //     sustained drift -> the KEY walks the circle of fifths (rising = up a fifth, falling = down),
 //     at most 3 steps from her key, and wanders home when the plant settles.
 //   BIG EVENT (a jolt far past anything usual) -> the mood tips to its sister for ~25 s.
-static const int WIN = 10;
+static const int WIN = 10;                // at least this many pulses per window...
+static const uint32_t WIN_MS = 50;        // ...AND at least this long. ★ 50 ms = exactly 3 cycles of 60 Hz
+                                          //   mains, so hum averages out. Pulse-counted windows were 5 ms at
+                                          //   1.9 kHz (10 nF cap, 2026-11-06) and sliced slow change into noise.
 static uint32_t tail = 0;
-static float win[WIN];
+static double winSum = 0;
 static int nwin = 0;
 static float prevMean = 0, typical = 0;  // typical = how much the plant USUALLY moves per window
 static bool primed = false;
@@ -264,12 +271,34 @@ static int traceHead = 0;
 // how unusual a change must be (x its typical change) to become a note: 1 = calm ... 9 = chatty
 //   ⚠️ must stay > 1 at chatty: at 0.8 (the old 9) it fired on the plant's ORDINARY movement —
 //   half of all windows played ("balls out hyper sample mode", 2026-11-04, apple at 180 Hz).
-static float sensFactor() { return 3.5f - (S.sens - 1) * 0.275f; }   // 1 -> 3.5x ... 9 -> 1.3x
+// ★★ WHEN TO PLAY = A PERCENTILE, not a multiple of a noise estimate (2026-11-06). Every fixed floor
+//   (6 µs, then 0.1% of the period) broke when the 10 nF cap moved the rate 10x and the window averaging
+//   changed. Now: keep the last ~30 s of |change|; play when this change is in the TOP `topFrac()` of them.
+//   calm (1) = top 0.3% (~1 per 15 s at 20 windows/s) ... chatty (9) = top 6% (~1/s). Rate-independent;
+//   a squeeze plays, then its big changes raise the bar so it can't machine-gun.
+static float topFrac() { return 0.003f * powf(20.0f, (S.sens - 1) / 8.0f); }
+static const int CH_N = 600;                 // ~30 s of windows
+static float chHist[CH_N], chTmp[CH_N];
+static int chN = 0;
+static float changeThreshold() {
+  int n = min(chN, CH_N);
+  if (n < 40) return INFINITY;               // ~2 s to learn this plant first
+  memcpy(chTmp, chHist, n * sizeof(float));
+  int k = constrain((int)((1.0f - topFrac()) * n), 0, n - 1);
+  std::nth_element(chTmp, chTmp + k, chTmp + n);
+  return chTmp[k];
+}
 static uint32_t noteGapMs() { return 120 + (9 - S.sens) * 25; }       // chatty 120 ms ... calm 320 ms
 // ★ NOISE FLOOR: the ISR's timing jitter (BLE + Wi-Fi interrupts) moves a 10-pulse mean by a few µs
 //   no matter what the plant does. Measured 2026-11-04 at 180 Hz: 'typical' sat at 2-4.7 µs. At low
 //   rates the relative floor (0.05%) is far above it; at high rates jitter IS the signal. Floor it.
-static const float JITTER_US = 6.0f;
+static const float JITTER_US = 0.1f;
+// ★ NOISE FLOOR IS RELATIVE: 0.1% of the period. At 180 Hz that is the 6 µs he liked ("it's fine now",
+//   2026-11-04); at 1.9 kHz (10 nF) it is ~0.5 µs. An absolute floor gated the faster cap almost silent.
+static const float NOISE_FRAC = 0.001f;
+// ⚠️ was 6 µs, measured at 180 Hz. At 1.9 kHz (10 nF) the period is 531 µs and the window mean moves
+//   0.3-1 µs: 6 µs gated nearly everything (11 notes in 3.5 min on chatty). The noise SCALES with the
+//   period (relative), so the 0.05% relative floor does the real work; this only guards micros() steps.
 
 static void slowTick(float m) {
   slow = slow == 0 ? m : slow + (m - slow) * 0.02f;
@@ -318,12 +347,10 @@ static void traceTick() {
 
 static void onPeriod(float p) {
   traceAcc += p; traceN++;
-  win[nwin++] = p;
-  if (nwin < WIN) return;
-  nwin = 0;
-  float m = 0;
-  for (float x : win) m += x;
-  m /= WIN;
+  winSum += p; nwin++;
+  if (nwin < WIN || millis() - winStartMs < WIN_MS) return;
+  float m = (float)(winSum / nwin);
+  winSum = 0; nwin = 0;
   uint32_t winMs = millis() - winStartMs;
   winStartMs = millis();
   hist[nhist % HIST] = m;
@@ -334,13 +361,15 @@ static void onPeriod(float p) {
   prevMean = m;
   // ★ ADAPTIVE: steady drift raises "typical" by itself, so drift alone stops making notes;
   //   only a change that is unusual FOR THIS PLANT, RIGHT NOW, plays.
-  float ratio = fabsf(change) / max(max(typical, m * 0.0005f), JITTER_US);
-  typical += (fabsf(change) - typical) * 0.05f;
+  float thr = max(changeThreshold(), m * 1e-5f);   // never zero: a dead-flat signal stays silent
+  float ratio = fabsf(change) / thr;               // >= 1 = in the top topFrac() of recent change
+  chHist[chN % CH_N] = fabsf(change); chN++;
+  typical += (fabsf(change) - typical) * 0.05f;    // (still feeds the key-drift test)
   dbgMean = m; dbgRatio = ratio; dbgChange = change;
   slowTick(m);
 
   float pos = rankIn(hist, min(nhist, HIST), m);   // rank, not min/max
-  float sf = sensFactor();
+  const float sf = 1.0f;
 
   if (ratio > sf && millis() - lastNoteMs > noteGapMs()) {
     float e = ratio / sf;                            // 1 = just enough ... big = a jolt
@@ -368,10 +397,11 @@ static void onPeriod(float p) {
       curDeg += (curDeg + dir > 2 * n || curDeg + dir < -n) ? -dir : dir;
       note = mel(curDeg);
     }
-    uint8_t vel = (uint8_t)constrain(55 + 30 * (ratio - sf), 45, 120);
+    uint8_t vel = (uint8_t)constrain(55 + 25 * (e - 1), 45, 120);
     uint32_t len = constrain(winMs * 4, 180u, 1600u);
     int size = e < 1.5f ? 1 : e < 2.2f ? 2 : e < 3.5f ? 3 : 4;  // how many notes this change earns
     size = min(size, (int)S.voices);
+    if (millis() - lastNoteMs < 500) size = 1;                 // rapid fire = single notes, no chord spray
     uint8_t sub = (uint8_t)max(40, vel - 18);
     if (size >= 2 && size < 4) play(mel(curDeg - 2), sub, len);                          // a third below
     if (size == 3) play(bass(curDeg - 4 - n), sub, len * 3 / 2);             // bass, octave down
@@ -387,8 +417,13 @@ static void onPeriod(float p) {
     traceNoteDue = true;                    // the seed lands on the next wave point
     bloomPending = true;
   }
-  int cc = (int)constrain(pos * 127, 0, 127);
-  if (abs(cc - lastCc) >= 2 && millis() - lastCcMs > 100) {
+  // ⚠️ CC74 is the receiving synth's FILTER on most patches. Sent raw from a 20/s noisy rank it jittered
+  //   0..127 at ~8 msg/s: the BLE link blinked nonstop and the filter kept slamming shut -> silent
+  //   instruments (2026-11-06, 10 nF cap). Now: ~2 s smoothing, <= 4/s, real changes only, floor 32.
+  static float ccSmooth = 0.5f;
+  ccSmooth += (pos - ccSmooth) * 0.025f;                       // ~2 s at 20 windows/s
+  int cc = (int)constrain(32 + ccSmooth * 95, 32, 127);
+  if (abs(cc - lastCc) >= 3 && millis() - lastCcMs > 250) {
     midi(0xB0, 74, cc);
     lastCc = cc; lastCcMs = millis();
   }
@@ -739,7 +774,8 @@ void setup() {
            ",\"bass\":" + (S.bass ? "true" : "false") +
            ",\"mean_us\":" + String(dbgMean, 1) + ",\"typical_us\":" + String(typical, 2) +
            ",\"change_us\":" + String(dbgChange, 2) + ",\"ratio\":" + String(dbgRatio, 2) +
-           ",\"notes\":" + notesTotal;
+           ",\"notes\":" + notesTotal +
+           ",\"midi_on\":" + midiCount[0] + ",\"midi_off\":" + midiCount[1] + ",\"cc74\":" + midiCount[2] + ",\"cc11\":" + midiCount[3];
   };
   Serial.println("stage: ble"); Serial.flush();
   blemidi::begin("MURMUR");

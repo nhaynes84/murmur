@@ -3,7 +3,8 @@
 set -eu
 OUT=${1:-/tmp/murmur-screen.png}
 if [ "${2:-}" = "--wifi" ]; then                     # over Wi-Fi, no USB needed
-  curl -s -m 20 -o /tmp/murmur-shot.raw http://192.168.86.65:8070/screen
+  H=$(dscacheutil -q host -a name murmur.local 2>/dev/null | awk '/ip_address/{print $2; exit}')
+  curl -s -m 20 -o /tmp/murmur-shot.raw "http://${H:-murmur.local}:8070/screen"
 else
 ssh -o BatchMode=yes nicks-macbook-pro "/opt/homebrew/bin/python3 - ${2:-}" > /tmp/murmur-shot.raw <<'PY'
 import serial, glob, sys, time

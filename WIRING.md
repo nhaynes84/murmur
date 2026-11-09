@@ -11,7 +11,7 @@ Each line is ONE joint: everything listed meets there. Parts named by what they 
 | U1 | TLC555CP — 8-pin black chip. Pin 1 = beside the notch/dot, count anticlockwise (top view) | |
 | R1 | 10k resistor (brown-black-orange) | |
 | R2 | 1k resistor (brown-black-red) — static protection on the electrode | |
-| C1 | **timing** — 0.1 µF electrolytic as tested (stalls on leafy plants); 10 nF ceramic recommended, untested | |
+| C1 | **timing**: 10 nF ceramic (103), no polarity. Tested on apples and leafy plants | |
 | C2 | 0.1 µF electrolytic — decoupling | |
 | C3 | 10 µF electrolytic — decoupling | |
 | J  | PJ-392 3.5 mm jack — plant lead | |
@@ -52,8 +52,7 @@ Note: the switch disconnects the cell, so **it only charges with the switch ON**
 - That connector's power pin must read **3.3 V**. If it reads 5 V, take 3V3 from the **I2C-OUT**
   socket instead — the 555's output must not exceed 3.3 V into IO17.
 
-## Values to tune later
+## Timing cap
 
-C1 0.1 µF with a 100k–1M plant gives ~14–70 Hz. It works, but an electrolytic is a poor timing
-cap and that range sits near mains hum (60 Hz). A **1–10 nF ceramic/film** C1 moves it to ~1–10 kHz,
-where the firmware can average hum out. None in stock — worth a cheap ceramic assortment later.
+C1 = 10 nF ceramic: about 2–4 kHz on an apple, steady on leaves. The original 0.1 µF electrolytic
+stalled on leafy plants (its leakage ate the charge current), so don't use an electrolytic here.

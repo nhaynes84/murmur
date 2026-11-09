@@ -5,7 +5,10 @@ set -eu
 cd "$(dirname "$0")"
 # ⚠️ by IP: after an OTA reboot, murmur.local can take a minute to resolve again (2026-11-03).
 #   192.168.86.65 is a DHCP lease — reserve it on the router so it stays put.
-HOST=${1:-192.168.86.65}
+# ★ find it by name: the router moves it (was .65, then .60 on 2026-11-06). Resolve murmur.local
+#   ONCE to an IP, then use the IP (mDNS lags right after an OTA reboot).
+HOST=${1:-$(dscacheutil -q host -a name murmur.local 2>/dev/null | awk '/ip_address/{print $2; exit}')}
+HOST=${HOST:-murmur.local}
 KEY=$(sed -n 's/#define OTA_KEY "\(.*\)"/\1/p' murmur/secrets.h)
 ./build.sh >/tmp/murmur-build.log 2>&1 || { tail -20 /tmp/murmur-build.log; exit 1; }
 grep "Sketch uses" /tmp/murmur-build.log

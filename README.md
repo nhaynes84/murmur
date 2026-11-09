@@ -88,10 +88,8 @@ badge plate.
 
 ## Status
 
-Working: a hand and an apple play it reliably, over Bluetooth and USB. Known limits:
+Working: hands, apples and leafy houseplants all play it, over Bluetooth and USB. Known limit:
 
-- The tested timing cap (0.1 µF electrolytic) stalls on leafy plants after a couple of notes. A 10 nF
-  ceramic is the intended fix but is still untested (see BOM note A).
 - There's no battery gauge. The board has nothing wired to measure the cell; a MAX17048 on
   I2C-OUT is the plan.
 
